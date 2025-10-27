@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Электронная книга — разворот (кнопки + клик)</title>
+  <style>
+    :root { --gap: 24px; --page-w: 420px; --page-h: 594px; }
+    body { margin: 0; font-family: system-ui, Arial, sans-serif; background:#f4f4f4; }
+    header {
+      display:flex; gap:12px; align-items:center;
+      padding:12px 16px; background:#fff; border-bottom:1px solid #ddd;
+      position:sticky; top:0; z-index:10;
+    }
+    header .grow { flex:1 }
+
+    /* Кнопки */
+    .btn {
+      padding:8px 12px;
+      border:1px solid #ccc;
+      background:#fff;
+      border-radius:8px;
+      cursor:pointer;
+      transition: background 0.2s, opacity 0.2s, transform 0.2s;
+      user-select:none;
+    }
+    .btn:hover:not(.btn-disabled) { background:#f0f0f0; }
+    .btn-disabled {
+      opacity:.55; cursor:not-allowed;
+    }
+    /* Анимация «wiggle» при невозможном действии */
+    @keyframes wiggle {
+      0%,100% { transform: translateX(0); }
+      20%     { transform: translateX(-4px); }
+      40%     { transform: translateX(4px); }
+      60%     { transform: translateX(-2px); }
+      80%     { transform: translateX(2px); }
+    }
+    .btn-wiggle { animation: wiggle .6s ease; }
+
+    .viewer {
+      min-height: calc(100vh - 58px);
+      display:flex; justify-content:center; align-items:center;
+      padding:32px 16px;
+    }
+    .spread {
+      display:flex; gap: var(--gap);
+      background:#e9e6e1; padding:24px; border-radius:16px;
+      box-shadow:0 6px 24px rgba(0,0,0,.08);
+    }
+    .page {
+      width: var(--page-w); height: var(--page-h);
+      background:#fff; border-radius:12px; box-shadow:0 2px 12px rgba(0,0,0,.08);
+      display:flex; align-items:center; justify-content:center; overflow:hidden;
+      border:1px solid rgba(0,0,0,.06);
+      transition: filter .15s ease;
+    }
+    .page canvas { width:100%; height:100%; object-fit:contain; }
+
+    /* Курсор для кликов по страницам */
+    .page.clickable { cursor: pointer; }
+    .page.disabled  { cursor: not-allowed; } /* БЕЗ изменения opacity — страница остаётся видимой */
+
+    .meta { font-size:14px; color:#555; }
+  </style>
+</head>
+<body>
+  <header>
+    <input type="file" id="file" accept="application/pdf" />
+    <div class="grow"></div>
+    <button id="prev" class="btn btn-disabled">⟵ Предыдущий разворот</button>
+    <button id="next" class="btn btn-disabled">Следующий разворот ⟶</button>
+    <div class="meta" id="info">Страницы: —</div>
+  </header>
+
+  <main class="viewer">
+    <div class="spread">
+      <div id="leftPage"  class="page"><canvas id="left"></canvas></div>
+      <div id="rightPage" class="page"><canvas id="right"></canvas></div>
+    </div>
+  </main>
+
+  <!-- PDF.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+  <script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
+
+    const fileInput = document.getElementById('file');
+    const info = document.getElementById('info');
+
+    const btnPrev = document.getElementById('prev');
+    const btnNext = document.getElementById('next');
+
+    const leftPageEl  = document.getElementById('leftPage');
+    const rightPageEl = document.getElementById('rightPage');
+    const canvasLeft  = document.getElementById('left');
+    const canvasRight = document.getElementById('right');
+
+    let pdfDoc = null;
+    let currentLeftPage = 1;
+    const renderScale = 1.2; // фиксированный масштаб
+
+    function canGoPrev() { return currentLeftPage > 1; }
+    function canGoNext() {
+      if (!pdfDoc) return false;
+      return (currentLeftPage + 1) < pdfDoc.numPages;
+    }
+
+    function setClickabilityAndButtons() {
+      // страницы: только курсор без затемнения
+      leftPageEl.classList.toggle('clickable', canGoPrev());
+      leftPageEl.classList.toggle('disabled',  !canGoPrev());
+      rightPageEl.classList.toggle('clickable', canGoNext());
+      rightPageEl.classList.toggle('disabled',  !canGoNext());
+
+      // кнопки: не отключаем совсем, а визуально «неактивные» + wiggle по клику
+      btnPrev.classList.toggle('btn-disabled', !canGoPrev());
+      btnNext.classList.toggle('btn-disabled', !canGoNext());
+    }
+
+    function wiggle(el) {
+      el.classList.remove('btn-wiggle'); // перезапуск
+      // force reflow
+      void el.offsetWidth;
+      el.classList.add('btn-wiggle');
+      setTimeout(() => el.classList.remove('btn-wiggle'), 650);
+    }
+
+    async function renderPageToCanvas(pageNumber, canvas, scale) {
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      if (!pdfDoc || pageNumber < 1 || pageNumber > pdfDoc.numPages) {
+        canvas.width = 10; canvas.height = 10; // пусто
+        return;
+      }
+      const page = await pdfDoc.getPage(pageNumber);
+      const viewport = page.getViewport({ scale });
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      await page.render({ canvasContext: ctx, viewport }).promise;
+    }
+
+    async function renderSpread() {
+      if (!pdfDoc) return;
+      await renderPageToCanvas(currentLeftPage,     canvasLeft,  renderScale);
+      await renderPageToCanvas(currentLeftPage + 1, canvasRight, renderScale);
+
+      info.textContent = `Страницы: ${currentLeftPage}-${Math.min(currentLeftPage + 1, pdfDoc.numPages)} / ${pdfDoc.numPages}`;
+      setClickabilityAndButtons();
+    }
+
+    fileInput.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const arrayBuf = await file.arrayBuffer();
+      pdfDoc = await pdfjsLib.getDocument({ data: arrayBuf }).promise;
+      currentLeftPage = 1;
+      await renderSpread();
+    });
+
+    // Клик по страницам
+    leftPageEl.addEventListener('click', async () => {
+      if (!canGoPrev()) return;
+      currentLeftPage = Math.max(1, currentLeftPage - 2);
+      await renderSpread();
+    });
+    rightPageEl.addEventListener('click', async () => {
+      if (!canGoNext()) return;
+      currentLeftPage = Math.min(pdfDoc.numPages - 1, currentLeftPage + 2);
+      await renderSpread();
+    });
+
+    // Клики по кнопкам с wiggle при невозможности
+    btnPrev.addEventListener('click', async () => {
+      if (!canGoPrev()) { wiggle(btnPrev); return; }
+      currentLeftPage = Math.max(1, currentLeftPage - 2);
+      await renderSpread();
+    });
+    btnNext.addEventListener('click', async () => {
+      if (!canGoNext()) { wiggle(btnNext); return; }
+      currentLeftPage = Math.min(pdfDoc.numPages - 1, currentLeftPage + 2);
+      await renderSpread();
+    });
+  </script>
+</body>
+</html>

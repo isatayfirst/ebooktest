@@ -3,18 +3,19 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-  <title>Электронная книга — разворот (кнопки + клик)</title>
+  <title>Электронная книга — разворот (переход к странице)</title>
   <style>
     :root { --gap: 24px; --page-w: 420px; --page-h: 594px; }
+    * { box-sizing: border-box; }
     body { margin: 0; font-family: system-ui, Arial, sans-serif; background:#f4f4f4; }
     header {
-      display:flex; gap:12px; align-items:center;
+      display:flex; gap:12px; align-items:center; flex-wrap: wrap;
       padding:12px 16px; background:#fff; border-bottom:1px solid #ddd;
       position:sticky; top:0; z-index:10;
     }
-    header .grow { flex:1 }
+    header .grow { flex:1 1 auto }
+    .meta { font-size:14px; color:#555; white-space: nowrap; }
 
-    /* Кнопки */
     .btn {
       padding:8px 12px;
       border:1px solid #ccc;
@@ -25,18 +26,13 @@
       user-select:none;
     }
     .btn:hover:not(.btn-disabled) { background:#f0f0f0; }
-    .btn-disabled {
-      opacity:.55; cursor:not-allowed;
+    .btn-disabled { opacity:.55; cursor:not-allowed; }
+    @keyframes wiggle { 0%,100%{transform:translateX(0)} 20%{transform:translateX(-4px)} 40%{transform:translateX(4px)} 60%{transform:translateX(-2px)} 80%{transform:translateX(2px)} }
+    .btn-wiggle{ animation: wiggle .6s ease; }
+
+    .input {
+      height:34px; padding:6px 10px; border:1px solid #ccc; border-radius:8px; outline:none;
     }
-    /* Анимация «wiggle» при невозможном действии */
-    @keyframes wiggle {
-      0%,100% { transform: translateX(0); }
-      20%     { transform: translateX(-4px); }
-      40%     { transform: translateX(4px); }
-      60%     { transform: translateX(-2px); }
-      80%     { transform: translateX(2px); }
-    }
-    .btn-wiggle { animation: wiggle .6s ease; }
 
     .viewer {
       min-height: calc(100vh - 58px);
@@ -53,20 +49,22 @@
       background:#fff; border-radius:12px; box-shadow:0 2px 12px rgba(0,0,0,.08);
       display:flex; align-items:center; justify-content:center; overflow:hidden;
       border:1px solid rgba(0,0,0,.06);
-      transition: filter .15s ease;
     }
     .page canvas { width:100%; height:100%; object-fit:contain; }
 
-    /* Курсор для кликов по страницам */
     .page.clickable { cursor: pointer; }
-    .page.disabled  { cursor: not-allowed; } /* БЕЗ изменения opacity — страница остаётся видимой */
+    .page.disabled  { cursor: not-allowed; }
 
-    .meta { font-size:14px; color:#555; }
   </style>
 </head>
 <body>
   <header>
     <input type="file" id="file" accept="application/pdf" />
+
+    <label for="goto" class="meta">Перейти к странице:</label>
+    <input id="goto" class="input" type="number" min="1" placeholder="№" style="width:90px">
+    <button id="gotoBtn" class="btn">Перейти</button>
+
     <div class="grow"></div>
     <button id="prev" class="btn btn-disabled">⟵ Предыдущий разворот</button>
     <button id="next" class="btn btn-disabled">Следующий разворот ⟶</button>
@@ -97,33 +95,28 @@
     const canvasLeft  = document.getElementById('left');
     const canvasRight = document.getElementById('right');
 
+    const gotoInput = document.getElementById('goto');
+    const gotoBtn   = document.getElementById('gotoBtn');
+
     let pdfDoc = null;
     let currentLeftPage = 1;
-    const renderScale = 1.2; // фиксированный масштаб
+    const renderScale = 1.2;
 
     function canGoPrev() { return currentLeftPage > 1; }
-    function canGoNext() {
-      if (!pdfDoc) return false;
-      return (currentLeftPage + 1) < pdfDoc.numPages;
-    }
+    function canGoNext() { return pdfDoc && (currentLeftPage + 1) < pdfDoc.numPages; }
 
     function setClickabilityAndButtons() {
-      // страницы: только курсор без затемнения
       leftPageEl.classList.toggle('clickable', canGoPrev());
       leftPageEl.classList.toggle('disabled',  !canGoPrev());
       rightPageEl.classList.toggle('clickable', canGoNext());
       rightPageEl.classList.toggle('disabled',  !canGoNext());
 
-      // кнопки: не отключаем совсем, а визуально «неактивные» + wiggle по клику
       btnPrev.classList.toggle('btn-disabled', !canGoPrev());
       btnNext.classList.toggle('btn-disabled', !canGoNext());
     }
 
     function wiggle(el) {
-      el.classList.remove('btn-wiggle'); // перезапуск
-      // force reflow
-      void el.offsetWidth;
-      el.classList.add('btn-wiggle');
+      el.classList.remove('btn-wiggle'); void el.offsetWidth; el.classList.add('btn-wiggle');
       setTimeout(() => el.classList.remove('btn-wiggle'), 650);
     }
 
@@ -132,8 +125,7 @@
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       if (!pdfDoc || pageNumber < 1 || pageNumber > pdfDoc.numPages) {
-        canvas.width = 10; canvas.height = 10; // пусто
-        return;
+        canvas.width = 10; canvas.height = 10; return;
       }
       const page = await pdfDoc.getPage(pageNumber);
       const viewport = page.getViewport({ scale });
@@ -146,9 +138,20 @@
       if (!pdfDoc) return;
       await renderPageToCanvas(currentLeftPage,     canvasLeft,  renderScale);
       await renderPageToCanvas(currentLeftPage + 1, canvasRight, renderScale);
-
       info.textContent = `Страницы: ${currentLeftPage}-${Math.min(currentLeftPage + 1, pdfDoc.numPages)} / ${pdfDoc.numPages}`;
       setClickabilityAndButtons();
+    }
+
+    function clampPage(p){
+      if (!pdfDoc) return 1;
+      return Math.max(1, Math.min(pdfDoc.numPages, p|0));
+    }
+
+    async function jumpTo(pageNumber){
+      if (!pdfDoc) return;
+      const p = clampPage(pageNumber);
+      currentLeftPage = (p % 2 === 0) ? p - 1 : p;
+      await renderSpread();
     }
 
     fileInput.addEventListener('change', async (e) => {
@@ -160,7 +163,6 @@
       await renderSpread();
     });
 
-    // Клик по страницам
     leftPageEl.addEventListener('click', async () => {
       if (!canGoPrev()) return;
       currentLeftPage = Math.max(1, currentLeftPage - 2);
@@ -172,7 +174,6 @@
       await renderSpread();
     });
 
-    // Клики по кнопкам с wiggle при невозможности
     btnPrev.addEventListener('click', async () => {
       if (!canGoPrev()) { wiggle(btnPrev); return; }
       currentLeftPage = Math.max(1, currentLeftPage - 2);
@@ -183,6 +184,9 @@
       currentLeftPage = Math.min(pdfDoc.numPages - 1, currentLeftPage + 2);
       await renderSpread();
     });
+
+    gotoBtn.addEventListener('click', () => { if (gotoInput.value) jumpTo(parseInt(gotoInput.value,10)); });
+    gotoInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && gotoInput.value) jumpTo(parseInt(gotoInput.value,10)); });
   </script>
 </body>
 </html>
